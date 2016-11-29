@@ -11,8 +11,7 @@ from graphite.util import unpickle
 from graphite.render.hashing import compactHash
 from graphite.intervals import Interval, IntervalSet
 
-findHTTP = urllib3.PoolManager()
-fetchHTTP = urllib3.PoolManager()
+http = urllib3.PoolManager(num_pools=10, maxsize=5)
 
 def connector_class_selector(https_support=False):
     return httplib.HTTPSConnection if https_support else httplib.HTTPConnection
@@ -81,7 +80,7 @@ class FindRequest(object):
       query_string = urlencode(query_params)
 
       try:
-        result = findHTTP.request('POST' if settings.REMOTE_STORE_USE_POST else 'GET',
+        result = http.request('POST' if settings.REMOTE_STORE_USE_POST else 'GET',
                               url, fields=query_params, headers=headers, timeout=settings.REMOTE_FIND_TIMEOUT)
       except:
         log.exception("FindRequest.send(host=%s, query=%s) exception during request" % (self.store.host, self.query))
@@ -203,7 +202,7 @@ class RemoteReader(object):
 
       try:
         log.info("ReadResult :: requesting %s?%s at %fs" % (url, query_string, time.time()))
-        result = fetchHTTP.request('POST' if settings.REMOTE_STORE_USE_POST else 'GET',
+        result = http.request('POST' if settings.REMOTE_STORE_USE_POST else 'GET',
                               url, fields=query_params, headers=headers, timeout=settings.REMOTE_FIND_TIMEOUT)
       except Exception as err:
         self.store.fail()
