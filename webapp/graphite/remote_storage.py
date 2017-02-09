@@ -49,7 +49,6 @@ class RemoteStore(object):
       self._last_failure = time.time()
 
 
-
 class FindRequest(object):
   __slots__ = ('store', 'query', 'cacheKey')
 
@@ -140,7 +139,6 @@ class FindRequest(object):
 
 class RemoteReader(object):
   __slots__ = ('store', 'metric_path', 'intervals', 'query', 'connection')
-  inflight_lock = Lock()
 
   def __init__(self, store, node_info, bulk_query=None):
     self.store = store
@@ -152,35 +150,41 @@ class RemoteReader(object):
   def __repr__(self):
     return '<RemoteReader[%x]: %s>' % (id(self), self.store.host)
 
+  def log_info(self, msg):
+    log.info(('thread %s at %fs ' % (current_thread().name, time.time())) + msg)
+
   def get_intervals(self):
     return self.intervals
 
   def fetch(self, startTime, endTime, now=None, requestContext=None):
-    seriesList = self.fetch_list(startTime, endTime, now, requestContext)
+    reader_context = self.get_reader_context(
+      startTime,
+      endTime,
+      now,
+      requestContext,
+    )
 
-    def _fetch(seriesList):
-      if seriesList is None:
+    series_list = self.fetch_list(reader_context)
+
+    def _fetch(series_list):
+      if series_list is None:
         return None
 
-      for series in seriesList:
+      for series in series_list:
         if series['name'] == self.metric_path:
           time_info = (series['start'], series['end'], series['step'])
           return (time_info, series['values'])
 
       return None
 
-    if isinstance(seriesList, FetchInProgress):
-      return FetchInProgress(lambda: _fetch(seriesList.waitForResults()))
+    if isinstance(series_list, FetchInProgress):
+      return FetchInProgress(lambda: _fetch(series_list.waitForResults()))
 
-    return _fetch(seriesList)
+    return _fetch(series_list)
 
-  def log_info(self, msg):
-    log.info(('thread %s at %fs ' % (current_thread().name, time.time())) + msg)
-
-  def fetch_list(self, startTime, endTime, now=None, requestContext=None):
-    (startTime, endTime, now) = timebounds(requestContext)
-    t = time.time()
-
+  # the reader context is specific to request and reader,
+  # so it's scope is smaller than that of the requestContext
+  def get_reader_context(self, startTime, endTime, now, requestContext):
     query_params = [
       ('target', self.query),
       ('format', 'pickle'),
@@ -188,126 +192,201 @@ class RemoteReader(object):
       ('from', str( int(startTime) )),
       ('until', str( int(endTime) ))
     ]
+    url_path = '/render/'
+    url = '{proto}://{host}{url}'.format(
+      proto='https' if settings.INTRACLUSTER_HTTPS else 'http',
+      host=self.store.host,
+      url=url_path,
+    )
+
     if now is not None:
       query_params.append(('now', str( int(now) )))
 
+    if 'inflight_lock' not in requestContext:
+      requestContext['inflight_lock'] = Lock()
+
     query_string = urlencode(query_params)
-    urlpath = '/render/'
-    url = "%s://%s%s" % ('https' if settings.INTRACLUSTER_HTTPS else 'http', self.store.host, urlpath)
-    headers = requestContext.get('forwardHeaders') if requestContext else None
 
-    cacheKey = "%s?%s" % (url, query_string)
+    reader_context = {
+      'cache_key': "%s?%s" % (
+        url,
+        query_string,
+      ),
+      'query_params': query_params,
+      'request_context': requestContext if requestContext is not None else {},
+      'urlpath': url_path,
+      'url': url,
+      'query_string': query_string,
+    }
 
-    # do not use with-syntax because we want to release this one as soon
-    # as we got the url lock
-    self.inflight_lock.acquire()
+    reader_context['headers'] = requestContext.get('forwardHeaders', None)
 
-    self.log_info("RemoteReader:: Got global lock %s?%s" % (url, query_string))
-    if requestContext is None:
-      requestContext = {}
-    if 'inflight_locks' not in requestContext:
-      requestContext['inflight_locks'] = {}
-    if 'inflight_requests' not in requestContext:
-      requestContext['inflight_requests'] = {}
-    if cacheKey not in requestContext['inflight_locks']:
-      self.log_info("RemoteReader:: Creating lock %s?%s" % (url, query_string))
-      requestContext['inflight_locks'][cacheKey] = Lock()
+    return reader_context
 
-    cacheLock = requestContext['inflight_locks'][cacheKey]
-    result_completeness = requestContext.get('result_completeness', None)
+  def fetch_list(self, reader_context):
+    request_context = reader_context['request_context']
+    (startTime, endTime, now) = timebounds(request_context)
+    t = time.time()
 
-    with cacheLock:
-      # release the global lock as soon as we got the cache key specific one
-      self.inflight_lock.release()
+    if settings.REMOTE_PREFETCH_DATA and 'fetch_q' in request_context:
+      self.fetch_into_result_queue(reader_context)
+    else:
+      self.fetch_into_request_context(reader_context)
 
-      self.log_info("RemoteReader:: got url lock %s?%s" % (url, query_string))
+    self.log_info("RemoteReader:: Returning %s?%s in %fs" % (
+      reader_context['url'],
+      reader_context['query_string'],
+      time.time() - t,
+    ))
 
-      if cacheKey in requestContext['inflight_requests']:
-        self.log_info("RemoteReader:: Returning cached FetchInProgress %s?%s" % (url, query_string))
-        return requestContext['inflight_requests'][cacheKey]
+  def fetch_into_result_queue(self, reader_context):
+    requestContext = reader_context['request_context']
+    if settings.USE_THREADING:
+      get_pool().put(
+        job=(
+          lambda: self.add_path_to_results(
+            self._fetch(reader_context),
+          ),
+        ),
+        result_queue=requestContext['fetch_q'],
+      )
+    else:
+      requestContext['fetch_q'].put(
+        self._fetch(reader_context),
+      )
+
+  def fetch_into_request_context(self, reader_context):
+    requestContext = reader_context['request_context']
+    cacheKey = reader_context['cache_key']
+
+    self.log_info(
+      "RemoteReader:: Got global lock %s?%s" % (
+        reader_context['url'],
+        reader_context['query_string']
+      ),
+    )
+
+    requestContext['inflight_lock'].acquire()
+
+    inflight_contexts = requestContext.get('inflight_contexts')
+    if inflight_contexts is None:
+      inflight_contexts = {}
+      requestContext['inflight_context'] = inflight_contexts
+
+    inflight_context = inflight_contexts.get(cacheKey)
+    if inflight_context is None:
+      inflight_context = {}
+      inflight_contexts[cacheKey] = inflight_context
+
+    if 'lock' not in inflight_context:
+      self.log_info("RemoteReader:: Creating lock %s?%s" % (
+        reader_context['url'],
+        reader_context['query_string'],
+      ))
+      inflight_context['lock'] = Lock()
+
+    # reduce lock scope by switching from request context wide lock
+    # to cacheKey specific one
+    with inflight_context['lock']:
+      requestContext['inflight_lock'].relase()
+
+      self.log_info("RemoteReader:: got cacheKey lock %s" % cacheKey)
+
+      if 'requests' in inflight_context:
+        self.log_info(
+          "RemoteReader:: Returning cached FetchInProgress %s?%s" % (
+            reader_context['url'],
+            reader_context['query_string'],
+          ),
+        )
+        return inflight_context['requests']
 
       q = Queue()
       if settings.USE_THREADING:
         get_pool().put(
-          job=(self._fetch, url, query_string, query_params, headers),
+          job=(self._fetch, reader_context),
           result_queue=q,
         )
       else:
         q.put(
-          self._fetch(url, query_string, query_params, headers),
+          self._fetch(reader_context),
         )
 
-      def retrieve():
-        with retrieve.lock:
-          # if the result is known we return it directly
-          if hasattr(retrieve, '_result'):
-            return getattr(retrieve, '_result')
-
-          # otherwise we get it from the queue and keep it for later
-          results = q.get(block=True)
-
-          if results is not None:
-            for i in range(len(results)):
-              results[i]['node'] = LeafNode(
-                path=results[i]['name'],
-                reader=RemoteReader(
-                  store=self.store,
-                  bulk_query=self.query,
-                  node_info={
-                    'is_leaf': True,
-                    'path': results[i]['name'],
-                    'intervals': results[i]['step'],
-                  }
-                ),
-              )
-          else:
-            self.log_info('RemoteReader:: retrieve has received no results')
-
-          setattr(retrieve, '_result', results)
-          return results
-
-      retrieve.lock = Lock()
-      data = FetchInProgress(retrieve)
+      data = self.retrieve_into_FetchInProgress(q)
       self.log_info(
         'RemoteReader:: Storing FetchInProgress with cacheKey {cacheKey}'
         .format(cacheKey=cacheKey),
       )
-      requestContext['inflight_requests'][cacheKey] = data
 
-      if result_completeness is not None:
-        with result_completeness['lock']:
-          result_completeness['stores_left'] -= 1
-          self.log_info(
-            'RemoteReader:: Decreasing stores_left count by 1, new count is {count}'
-            .format(count=result_completeness['stores_left']),
-          )
-          if result_completeness['stores_left'] == 0:
-            # if the results of all stores have been pushed into requestContext
-            # we release the lock to signal that find() is not necessary anymore
-            self.log_info('RemoteReader:: All backend requests created')
-            result_completeness['await_complete'].release()
-
-      self.log_info("RemoteReader:: Returning %s?%s in %fs" % (url, query_string, time.time() - t))
+      inflight_context['requests'] = data
       return data
 
-  def _fetch(self, url, query_string, query_params, headers):
-    self.log_info("RemoteReader:: Starting to execute _fetch %s?%s" % (url, query_string))
+  @staticmethod
+  def add_path_to_results(results):
+    for i in range(len(results)):
+      results[i] = (results[i]['name'], results[i])
+    return results
+
+  def retrieve_into_FetchInProgress(self, q):
+    def _retrieve():
+      with _retrieve.lock:
+        # if the result is known we return it directly
+        if hasattr(_retrieve, '_result'):
+          return getattr(_retrieve, '_result')
+
+        # otherwise we get it from the queue and keep it for later
+        results = q.get(block=True)
+
+        if results is not None:
+          self.add_path_to_results(results)
+        else:
+          self.log_info('RemoteReader:: _retrieve has received no results')
+
+        setattr(_retrieve, '_result', results)
+        return results
+
+    _retrieve.lock = Lock()
+    return FetchInProgress(_retrieve)
+
+  def _fetch(self, reader_context):
+    requestContext = reader_context['request_context']
+    self.log_info(
+      'RemoteReader:: Starting to execute _fetch %s?%s' % (
+        reader_context['url'],
+        reader_context['query_string'],
+      ),
+    )
     try:
-      self.log_info("ReadResult:: Requesting %s?%s" % (url, query_string))
-      result = http.request('POST' if settings.REMOTE_STORE_USE_POST else 'GET',
-                            url, fields=query_params, headers=headers, timeout=settings.REMOTE_FIND_TIMEOUT)
+      self.log_info("ReadResult:: Requesting %s?%s" % (
+          reader_context['url'],
+          reader_context['query_string'],
+        ),
+      )
+      result = http.request(
+        'POST' if settings.REMOTE_STORE_USE_POST else 'GET',
+        reader_context['url'],
+        fields=reader_context['query_params'],
+        headers=reader_context['headers'],
+        timeout=settings.REMOTE_FIND_TIMEOUT,
+      )
       if result.status != 200:
         self.store.fail()
-        self.log_info("ReadResult:: Error response %d from %s?%s" % (result.status, url, query_string))
+        self.log_info(
+          'ReadResult:: Error response %d from %s?%s' % (
+            result.status,
+            reader_context['url'],
+            reader_context['query_string'],
+          ),
+        )
         data = None
       else:
         data = unpickle.loads(result.data)
     except Exception as err:
       self.store.fail()
-      self.log_info("ReadResult:: Error requesting %s?%s: %s" % (url, query_string, err))
+      self.log_info("ReadResult:: Error requesting %s?%s: %s" % (reader_context['url'], reader_context['query_string'], err))
       data = None
 
-    self.log_info("RemoteReader:: Completed _fetch %s?%s" % (url, query_string))
+    self.log_info("RemoteReader:: Completed _fetch %s?%s" % (reader_context['url'], reader_context['query_string']))
     return data
 
 

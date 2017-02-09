@@ -15,6 +15,7 @@ limitations under the License."""
 # import pprint
 import time
 from threading import Lock, current_thread
+from Queue import Queue
 # import pprint
 
 from graphite.logger import log
@@ -118,11 +119,18 @@ def prefetchRemoteData(requestContext, pathExpressions):
   if requestContext['localOnly']:
     return
 
+  available_remote_stores = [
+    store
+    for store in STORE.remote_stores
+    if store.available
+  ]
+
+  requestContext['fetch_q'] = Queue()
   (startTime, endTime, now) = timebounds(requestContext)
 
   result_completeness = {
     'lock': Lock(),
-    'stores_left': len(STORE.remote_stores),
+    'stores_left': len(available_remote_stores),
     'await_complete': Lock(),
   }
 
@@ -148,9 +156,16 @@ def prefetchRemoteData(requestContext, pathExpressions):
 
   log.info('thread %s prefetchRemoteData:: Starting fetch_list on all backends' % current_thread().name)
   for pathExpr in pathExpressions:
-    for store in STORE.remote_stores:
+    for store in available_remote_stores:
       reader = RemoteReader(store, {'path': pathExpr, 'intervals': []}, bulk_query=pathExpr)
-      reader.fetch_list(startTime, endTime, now, requestContext)
+      reader.fetch_list(
+        reader.get_reader_context(
+          startTime=startTime,
+          endTime=endTime,
+          now=now,
+          requestContext=requestContext,
+        ),
+      )
 
 
 def fetchRemoteData(requestContext, pathExpr, nodes):
@@ -162,7 +177,8 @@ def fetchRemoteData(requestContext, pathExpr, nodes):
 
   def _gen():
     for node in leaf_nodes:
-      yield node.fetch(startTime, endTime, now, requestContext)
+      node, result = node.fetch(startTime, endTime, now, requestContext)
+      yield (node.path, result)
 
   return _gen()
 
@@ -201,33 +217,27 @@ def _fetchData(pathExpr, startTime, endTime, requestContext, seriesList):
   t = time.time()
 
   if settings.REMOTE_PREFETCH_DATA and 'result_completeness' in requestContext:
-    result_completeness = requestContext['result_completeness']
+    #result_completeness = requestContext['result_completeness']
 
-    result_completeness['await_complete'].acquire()
-    with result_completeness['timed_out']['lock']:
-      if result_completeness['timed_out']['value']:
-        result_completeness['await_complete'].release()
-        raise Exception('timed out waiting for results')
-    result_completeness['await_complete'].release()
+    #result_completeness['await_complete'].acquire()
+    #with result_completeness['timed_out']['lock']:
+    #  if result_completeness['timed_out']['value']:
+    #    result_completeness['await_complete'].release()
+    #    raise Exception('timed out waiting for results')
+    #result_completeness['await_complete'].release()
 
     # inflight_requests is only present if at least one remote store
     # has been queried
-    if 'inflight_requests' in requestContext:
-      fetches = requestContext['inflight_requests']
-    else:
-      fetches = {}
+    #if 'inflight_requests' in requestContext:
+    #  fetches = requestContext['inflight_requests']
+    #else:
+    #  fetches = {}
 
     def result_queue_generator():
-      log.info(
-        'render.datalib.fetchData:: result_queue_generator got {count} fetches'
-        .format(count=len(fetches)),
-      )
-      for key, fetch in fetches.iteritems():
-        log.info(
-          'render.datalib.fetchData:: getting results of {host}'
-          .format(host=key),
-        )
-
+      res_count = 0
+      fetches = requestContext['fetch_q']
+      while True:
+        fetch = fetches.get(block=True)
         if isinstance(fetch, FetchInProgress):
           fetch = fetch.waitForResults()
 
@@ -236,13 +246,17 @@ def _fetchData(pathExpr, startTime, endTime, requestContext, seriesList):
           continue
 
         for result in fetch:
+          path, values = result
           yield (
-            result['node'],
+            path,
             (
-              (result['start'], result['end'], result['step']),
-              result['values'],
+              (values['start'], values['end'], values['step']),
+              values['values'],
             ),
           )
+        res_count += 1
+        if res_count == requestContext['result_completeness']['stores_left']:
+          return
 
     result_queue = result_queue_generator()
 
@@ -251,21 +265,21 @@ def _fetchData(pathExpr, startTime, endTime, requestContext, seriesList):
     result_queue = fetchRemoteData(requestContext, pathExpr, nodes)
 
   log.info("render.datalib.fetchData :: starting to merge")
-  for node, results in result_queue:
+  for path, results in result_queue:
     if isinstance(results, FetchInProgress):
       results = results.waitForResults()
 
     if not results:
-      log.info("render.datalib.fetchData :: no results for %s.fetch(%s, %s)" % (node, startTime, endTime))
+      log.info("render.datalib.fetchData :: no results for %s.fetch(%s, %s)" % (path, startTime, endTime))
       continue
 
     try:
       (timeInfo, values) = results
     except ValueError as e:
-      raise Exception("could not parse timeInfo/values from metric '%s': %s" % (node.path, e))
+      raise Exception("could not parse timeInfo/values from metric '%s': %s" % (path, e))
     (start, end, step) = timeInfo
 
-    series = TimeSeries(node.path, start, end, step, values)
+    series = TimeSeries(path, start, end, step, values)
 
     # hack to pass expressions through to render functions
     series.pathExpression = pathExpr
