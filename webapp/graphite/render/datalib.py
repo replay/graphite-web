@@ -150,13 +150,11 @@ def fetchRemoteData(requestContext, pathExpr, nodes):
   (startTime, endTime, now) = timebounds(requestContext)
   log.info("Got timebounds %fs" % (time.time() - start))
 
-  leaf_nodes = [node for node in nodes if node.is_leaf]
-
-  def _gen():
-    for node in leaf_nodes:
-      yield node.fetch(startTime, endTime, now, requestContext)
-
-  return _gen()
+  return [
+    node.fetch(startTime, endTime, now, requestContext)
+    for node in nodes
+    if node.is_leaf
+  ]
 
 
 # Data retrieval API
