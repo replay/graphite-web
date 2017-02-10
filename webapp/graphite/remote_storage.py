@@ -26,25 +26,17 @@ class RemoteStore(object):
 
   def __init__(self, host):
     self.host = host
-    self._failure_lock = Lock()
-    self._last_failure = 0
+    self.last_failure = 0
 
   @property
   def available(self):
     return time.time() - self.last_failure > settings.REMOTE_RETRY_DELAY
 
-  @property
-  def last_failure(self):
-    with self._failure_lock:
-      return self._last_failure
-
   def fail(self):
-    with self._failure_lock:
-      self._last_failure = time.time()
+    self.last_failure = time.time()
 
   def find(self, query, headers=None):
     return list(FindRequest(self, query).send(headers))
-
 
 
 class FindRequest(object):
