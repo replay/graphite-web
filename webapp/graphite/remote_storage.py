@@ -75,7 +75,12 @@ class RemoteResultCompleteness(object):
 
       # if we have no store left to wait for, release await_complete
       if sc_value == 0:
-        self._await_complete.release()
+        try:
+          self._await_complete.release()
+        except ThreadError:
+          # if the request has timed out before we got here
+          # .release() will be called on an unlocked lock
+          pass
 
     log.info(
       'RemoteReader:: Decreasing stores_left count by 1, new count is {count}'
