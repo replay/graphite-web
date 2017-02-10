@@ -253,7 +253,7 @@ def _fetchData(pathExpr, startTime, endTime, requestContext, seriesList):
 
         for result in fetch:
           yield (
-            result['node'],
+            result['path'],
             (
               (result['start'], result['end'], result['step']),
               result['values'],
@@ -267,21 +267,21 @@ def _fetchData(pathExpr, startTime, endTime, requestContext, seriesList):
     result_queue = fetchRemoteData(requestContext, pathExpr, nodes)
 
   log.info("render.datalib.fetchData :: starting to merge")
-  for node, results in result_queue:
+  for path, results in result_queue:
     if isinstance(results, FetchInProgress):
       results = results.waitForResults()
 
     if not results:
-      log.info("render.datalib.fetchData :: no results for %s.fetch(%s, %s)" % (node, startTime, endTime))
+      log.info("render.datalib.fetchData :: no results for %s.fetch(%s, %s)" % (path, startTime, endTime))
       continue
 
     try:
       (timeInfo, values) = results
     except ValueError as e:
-      raise Exception("could not parse timeInfo/values from metric '%s': %s" % (node.path, e))
+      raise Exception("could not parse timeInfo/values from metric '%s': %s" % (path, e))
     (start, end, step) = timeInfo
 
-    series = TimeSeries(node.path, start, end, step, values)
+    series = TimeSeries(path, start, end, step, values)
 
     # hack to pass expressions through to render functions
     series.pathExpression = pathExpr

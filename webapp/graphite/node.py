@@ -27,9 +27,9 @@ class LeafNode(Node):
 
   def fetch(self, startTime, endTime, now=None, requestContext=None):
     try:
-      result = (self, self.reader.fetch(startTime, endTime, now, requestContext))
+      result = (self.path, self.reader.fetch(startTime, endTime, now, requestContext))
     except TypeError:
-      result = (self, self.reader.fetch(startTime, endTime))
+      result = (self.path, self.reader.fetch(startTime, endTime))
 
     return result
 

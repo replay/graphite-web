@@ -247,18 +247,7 @@ class RemoteReader(object):
 
           if results is not None:
             for i in range(len(results)):
-              results[i]['node'] = LeafNode(
-                path=results[i]['name'],
-                reader=RemoteReader(
-                  store=self.store,
-                  bulk_query=self.query,
-                  node_info={
-                    'is_leaf': True,
-                    'path': results[i]['name'],
-                    'intervals': results[i]['step'],
-                  }
-                ),
-              )
+              results[i]['path'] = results[i]['name']
           else:
             self.log_error('RemoteReader:: retrieve has received no results')
 
