@@ -14,7 +14,7 @@ limitations under the License."""
 
 # import pprint
 import time
-from threading import Lock, current_thread, Thread, ThreadError
+from threading import current_thread
 # import pprint
 
 from graphite.logger import log
