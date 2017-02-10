@@ -3,7 +3,7 @@ import httplib
 import urllib3
 from Queue import Queue
 from urllib import urlencode
-from threading import Lock, current_thread
+from threading import Lock, current_thread, Thread, ThreadError
 from django.conf import settings
 from django.core.cache import cache
 from graphite.intervals import Interval, IntervalSet
@@ -19,6 +19,71 @@ http = urllib3.PoolManager(num_pools=10, maxsize=5)
 
 def connector_class_selector(https_support=False):
     return httplib.HTTPSConnection if https_support else httplib.HTTPConnection
+
+
+class RemoteResultCompleteness(object):
+
+  def __init__(self, store_count, timeout):
+    self._sc_value = store_count
+    self._sc_lock = Lock()
+    self._await_complete = Lock()
+    self._timed_out = False
+    self._timeout_after(timeout)
+
+    # if there are backend stores to wait for we acquire the lock to make
+    # other threads wait
+    if self._sc_value > 0:
+      self._await_complete.acquire()
+
+  # creates a thread that sets this object to timed out after the passed
+  # number of seconds
+  def _timeout_after(self, timeout):
+    def _start_thread():
+      def _timeout():
+        time.sleep(timeout)
+        self._timed_out = True
+        try:
+          self._await_complete.release()
+        except ThreadError:
+          # if the request has been completed before the timeout has been reached,
+          # .release() will be called on an unlocked lock
+          pass
+
+      t = Thread(target=_timeout)
+      t.daemon = True
+      t.start()
+
+    if settings.USE_WORKER_POOL:
+      # we don't want to block a pool worker for the whole duration of REMOTE_FETCH_TIMEOUT
+      # and we also don't want the overhead of creating a new thread in this thread, so we
+      # make a pool worker create a new thread to wait for the timeout
+      get_pool().put(
+        job=(_start_thread,),
+      )
+    else:
+      _start_thread()
+
+  # waits until there are no backend stores left to wait for
+  # if timeout has been reached the returned value is False
+  def await_complete(self):
+    self._await_complete.acquire()
+    return not self._timed_out
+
+  # called when a store has completed, decreases the number of stores
+  # to wait for by one
+  def store_completed(self):
+    with self._sc_lock:
+      sc_value = self._sc_value - 1
+      self._sc_value -= sc_value
+
+      # if we have no store left to wait for, release await_complete
+      if sc_value == 0:
+        self._await_complete.release()
+
+    log.info(
+      'RemoteReader:: Decreasing stores_left count by 1, new count is {count}'
+      .format(count=sc_value),
+    )
 
 
 class RemoteStore(object):
@@ -197,28 +262,22 @@ class RemoteReader(object):
 
     cacheKey = "%s?%s" % (url, query_string)
 
-    # do not use with-syntax because we want to release this one as soon
-    # as we got the url lock
-    self.inflight_lock.acquire()
+    with self.inflight_lock:
+      self.log_debug("RemoteReader:: Got global lock %s?%s" % (url, query_string))
+      if requestContext is None:
+        requestContext = {}
+      if 'inflight_locks' not in requestContext:
+        requestContext['inflight_locks'] = {}
+      if 'inflight_requests' not in requestContext:
+        requestContext['inflight_requests'] = {}
+      if cacheKey not in requestContext['inflight_locks']:
+        self.log_debug("RemoteReader:: Creating lock %s?%s" % (url, query_string))
+        requestContext['inflight_locks'][cacheKey] = Lock()
 
-    self.log_debug("RemoteReader:: Got global lock %s?%s" % (url, query_string))
-    if requestContext is None:
-      requestContext = {}
-    if 'inflight_locks' not in requestContext:
-      requestContext['inflight_locks'] = {}
-    if 'inflight_requests' not in requestContext:
-      requestContext['inflight_requests'] = {}
-    if cacheKey not in requestContext['inflight_locks']:
-      self.log_debug("RemoteReader:: Creating lock %s?%s" % (url, query_string))
-      requestContext['inflight_locks'][cacheKey] = Lock()
-
-    result_completeness = requestContext.get('result_completeness', None)
     cacheLock = requestContext['inflight_locks'][cacheKey]
+    result_completeness = requestContext.get('result_completeness')
 
     with cacheLock:
-      # release the global lock as soon as we got the cache key specific one
-      self.inflight_lock.release()
-
       self.log_debug("RemoteReader:: got url lock %s?%s" % (url, query_string))
 
       if cacheKey in requestContext['inflight_requests']:
@@ -263,17 +322,7 @@ class RemoteReader(object):
       requestContext['inflight_requests'][cacheKey] = data
 
       if result_completeness is not None:
-        with result_completeness['stores']['lock']:
-          result_completeness['stores']['left_count'] -= 1
-          self.log_debug(
-            'RemoteReader:: Decreasing stores_left count by 1, new count is {count}'
-            .format(count=result_completeness['stores']['left_count']),
-          )
-          if result_completeness['stores']['left_count'] == 0:
-            # if the results of all stores have been pushed into requestContext
-            # we release the lock to signal that find() is not necessary anymore
-            self.log_debug('RemoteReader:: All backend requests created')
-            result_completeness['await_complete'].release()
+        result_completeness.store_completed()
 
       self.log_debug("RemoteReader:: Returning %s?%s in %fs" % (url, query_string, time.time() - t))
       return data

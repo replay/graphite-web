@@ -20,7 +20,7 @@ from threading import Lock, current_thread, Thread, ThreadError
 from graphite.logger import log
 from graphite.storage import STORE
 from graphite.readers import FetchInProgress
-from graphite.remote_storage import RemoteReader
+from graphite.remote_storage import RemoteReader, RemoteResultCompleteness
 from django.conf import settings
 from graphite.util import timebounds
 from graphite.worker_pool.pool import get_pool
@@ -118,42 +118,14 @@ def prefetchRemoteData(requestContext, pathExpressions):
   if requestContext['localOnly']:
     return
 
-  result_completeness = {
-    'stores': {
-      'lock': Lock(),
-      'left_count': len(STORE.remote_stores),
-    },
-    'await_complete': Lock(),
-  }
+  if requestContext is None:
+    requestContext = {}
 
-  if result_completeness['stores']['left_count'] > 0:
-    result_completeness['await_complete'].acquire()
-    result_completeness['timed_out'] = {
-      'lock': Lock(),
-      'value': False,
-    }
-
-    def _timeout():
-      time.sleep(settings.REMOTE_FETCH_TIMEOUT)
-      with result_completeness['timed_out']['lock']:
-        result_completeness['timed_out']['value'] = True
-      try:
-        result_completeness['await_complete'].release()
-      except ThreadError:
-        # if the request has been completed before the timeout has been reached,
-        # .release() will be called on an unlocked lock
-        pass
-
-    if settings.USE_WORKER_POOL:
-      # we don't want to block a pool worker for the whole duration of REMOTE_FETCH_TIMEOUT
-      # and we also don't want the overhead of creating a new thread in this thread, so we
-      # make a pool worker create a new thread to wait for the timeout
-      get_pool().put(
-        job=(lambda: Thread(target=_timeout).start(),),
-      )
-
-  requestContext['result_completeness'] = result_completeness
   if settings.USE_WORKER_POOL:
+    requestContext['result_completeness'] = RemoteResultCompleteness(
+      len(STORE.remote_stores),
+      settings.REMOTE_FETCH_TIMEOUT,
+    )
     get_pool().put(
       job=(lambda: _prefetchRemoteData(requestContext, pathExpressions),),
     )
@@ -220,15 +192,11 @@ def fetchData(requestContext, pathExpr):
 def _fetchData(pathExpr, startTime, endTime, requestContext, seriesList):
   t = time.time()
 
-  if settings.REMOTE_PREFETCH_DATA and 'result_completeness' in requestContext:
-    result_completeness = requestContext['result_completeness']
-
-    with result_completeness['await_complete']:
-      timed_out = result_completeness.get('timed_out')
-      if timed_out is not None:
-        with timed_out['lock']:
-          if timed_out['value']:
-            raise Exception('timed out waiting for results')
+  if settings.REMOTE_PREFETCH_DATA:
+    if'result_completeness' in requestContext:
+      complete = requestContext['result_completeness'].await_complete()
+      if not complete:
+        raise Exception('timed out waiting for results')
 
     # inflight_requests is only present if at least one remote store
     # has been queried
