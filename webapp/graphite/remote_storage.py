@@ -53,15 +53,12 @@ class RemoteResultCompleteness(object):
       t.daemon = True
       t.start()
 
-    if settings.USE_WORKER_POOL:
-      # we don't want to block a pool worker for the whole duration of REMOTE_FETCH_TIMEOUT
-      # and we also don't want the overhead of creating a new thread in this thread, so we
-      # make a pool worker create a new thread to wait for the timeout
-      get_pool().put(
-        job=(_start_thread,),
-      )
-    else:
-      _start_thread()
+    # we don't want to block a pool worker for the whole duration of REMOTE_FETCH_TIMEOUT
+    # and we also don't want the overhead of creating a new thread in this thread, so we
+    # make a pool worker create a new thread to wait for the timeout
+    get_pool().put(
+      job=(_start_thread,),
+    )
 
   # waits until there are no backend stores left to wait for
   # if timeout has been reached the returned value is False
