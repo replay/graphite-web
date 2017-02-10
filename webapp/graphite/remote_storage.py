@@ -263,13 +263,13 @@ class RemoteReader(object):
       requestContext['inflight_requests'][cacheKey] = data
 
       if result_completeness is not None:
-        with result_completeness['lock']:
-          result_completeness['stores_left'] -= 1
+        with result_completeness['stores']['lock']:
+          result_completeness['stores']['left_count'] -= 1
           self.log_debug(
             'RemoteReader:: Decreasing stores_left count by 1, new count is {count}'
-            .format(count=result_completeness['stores_left']),
+            .format(count=result_completeness['stores']['left_count']),
           )
-          if result_completeness['stores_left'] == 0:
+          if result_completeness['stores']['left_count'] == 0:
             # if the results of all stores have been pushed into requestContext
             # we release the lock to signal that find() is not necessary anymore
             self.log_debug('RemoteReader:: All backend requests created')

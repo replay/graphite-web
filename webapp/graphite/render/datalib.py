@@ -119,12 +119,14 @@ def prefetchRemoteData(requestContext, pathExpressions):
     return
 
   result_completeness = {
-    'lock': Lock(),
-    'stores_left': len(STORE.remote_stores),
+    'stores': {
+      'lock': Lock(),
+      'left_count': len(STORE.remote_stores),
+    },
     'await_complete': Lock(),
   }
 
-  if result_completeness['stores_left'] > 0:
+  if result_completeness['stores']['left_count'] > 0:
     result_completeness['await_complete'].acquire()
     result_completeness['timed_out'] = {
       'lock': Lock(),
