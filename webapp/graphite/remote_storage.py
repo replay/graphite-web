@@ -262,17 +262,23 @@ class RemoteReader(object):
 
     cacheKey = "%s?%s" % (url, query_string)
 
-    with self.inflight_lock:
-      self.log_debug("RemoteReader:: Got global lock %s?%s" % (url, query_string))
-      if requestContext is None:
-        requestContext = {}
-      if 'inflight_locks' not in requestContext:
-        requestContext['inflight_locks'] = {}
-      if 'inflight_requests' not in requestContext:
-        requestContext['inflight_requests'] = {}
-      if cacheKey not in requestContext['inflight_locks']:
-        self.log_debug("RemoteReader:: Creating lock %s?%s" % (url, query_string))
-        requestContext['inflight_locks'][cacheKey] = Lock()
+    if requestContext is not None and 'inflight_requests' in requestContext and cacheKey in requestContext['inflight_requests']:
+      self.log_debug("RemoteReader:: Returning cached FetchInProgress %s?%s" % (url, query_string))
+      return requestContext['inflight_requests'][cacheKey]
+
+    if requestContext is None or 'inflight_locks' not in requestContext or cacheKey not in requestContext['inflight_locks']:
+      with self.inflight_lock:
+        self.log_debug("RemoteReader:: Got global lock %s?%s" % (url, query_string))
+        if requestContext is None:
+          requestContext = {}
+        if 'inflight_locks' not in requestContext:
+          requestContext['inflight_locks'] = {}
+        if 'inflight_requests' not in requestContext:
+          requestContext['inflight_requests'] = {}
+        if cacheKey not in requestContext['inflight_locks']:
+          self.log_debug("RemoteReader:: Creating lock %s?%s" % (url, query_string))
+          requestContext['inflight_locks'][cacheKey] = Lock()
+      self.log_debug("RemoteReader:: Released global lock %s?%s" % (url, query_string))
 
     cacheLock = requestContext['inflight_locks'][cacheKey]
     result_completeness = requestContext.get('result_completeness')
@@ -326,8 +332,8 @@ class RemoteReader(object):
       if result_completeness is not None:
         result_completeness.store_completed()
 
-      self.log_debug("RemoteReader:: Returning %s?%s in %fs" % (url, query_string, time.time() - t))
-      return data
+    self.log_debug("RemoteReader:: Returning %s?%s in %fs" % (url, query_string, time.time() - t))
+    return data
 
   def _fetch(self, url, query_string, query_params, headers):
     self.log_debug("RemoteReader:: Starting to execute _fetch %s?%s" % (url, query_string))
