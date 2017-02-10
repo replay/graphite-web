@@ -299,6 +299,7 @@ class RemoteReader(object):
         with retrieve.lock:
           # if the result is known we return it directly
           if hasattr(retrieve, '_result'):
+            self.log_error('RemoteReader:: retrieve completed (cached) %s' % (', '.join([result['path'] for result in getattr(retrieve, '_result')])))
             return getattr(retrieve, '_result')
 
           # otherwise we get it from the queue and keep it for later
@@ -311,6 +312,7 @@ class RemoteReader(object):
             self.log_error('RemoteReader:: retrieve has received no results')
 
           setattr(retrieve, '_result', results)
+          self.log_error('RemoteReader:: retrieve completed %s' % (', '.join([result['path'] for result in results])))
           return results
 
       self.log_debug(
