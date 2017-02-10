@@ -222,9 +222,11 @@ def _fetchData(pathExpr, startTime, endTime, requestContext, seriesList):
     result_completeness = requestContext['result_completeness']
 
     with result_completeness['await_complete']:
-      with result_completeness['timed_out']['lock']:
-        if result_completeness['timed_out']['value']:
-          raise Exception('timed out waiting for results')
+      timed_out = result_completeness.get('timed_out')
+      if timed_out is not None:
+        with timed_out['lock']:
+          if timed_out['value']:
+            raise Exception('timed out waiting for results')
 
     # inflight_requests is only present if at least one remote store
     # has been queried
