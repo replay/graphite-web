@@ -15,7 +15,8 @@ class StandardFinder:
   DATASOURCE_DELIMITER = '::RRD_DATASOURCE::'
 
   def __init__(self, directories=None):
-    self.directories = directories or settings.STANDARD_DIRS
+    directories = directories or settings.STANDARD_DIRS
+    self.directories = directories
 
   def find_nodes(self, query):
     clean_pattern = query.pattern.replace('\\', '')

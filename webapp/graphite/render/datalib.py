@@ -145,18 +145,6 @@ def _prefetchRemoteData(requestContext, pathExpressions):
       reader.fetch_list(startTime, endTime, now, requestContext)
 
 
-def fetchRemoteData(requestContext, pathExpr, nodes):
-  start = time.time()
-  (startTime, endTime, now) = timebounds(requestContext)
-  log.info("Got timebounds %fs" % (time.time() - start))
-
-  return [
-    node.fetch(startTime, endTime, now, requestContext)
-    for node in nodes
-    if node.is_leaf
-  ]
-
-
 # Data retrieval API
 def fetchData(requestContext, pathExpr):
   start = time.time()
@@ -167,7 +155,7 @@ def fetchData(requestContext, pathExpr):
   retries = 1 # start counting at one to make log output and settings more readable
   while True:
     try:
-      seriesList = _fetchData(pathExpr, startTime, endTime, requestContext, seriesList)
+      seriesList = _fetchData(pathExpr, startTime, endTime, now, requestContext, seriesList)
       break
     except Exception, e:
       if retries >= settings.MAX_FETCH_RETRIES:
@@ -187,7 +175,7 @@ def fetchData(requestContext, pathExpr):
 
   return retval
 
-def _fetchData(pathExpr, startTime, endTime, requestContext, seriesList):
+def _fetchData(pathExpr, startTime, endTime, now, requestContext, seriesList):
   t = time.time()
 
   if settings.REMOTE_PREFETCH_DATA:
@@ -233,8 +221,12 @@ def _fetchData(pathExpr, startTime, endTime, requestContext, seriesList):
     result_queue = result_queue_generator()
 
   else:
-    nodes = [node for node in STORE.find(pathExpr, startTime, endTime, local=requestContext['localOnly'])]
-    result_queue = fetchRemoteData(requestContext, pathExpr, nodes)
+    matching_nodes = [node for node in STORE.find(pathExpr, startTime, endTime, local=requestContext['localOnly'])]
+    result_queue = [
+      node.fetch(startTime, endTime, now, requestContext)
+      for node in matching_nodes
+      if node.is_leaf
+    ]
 
   log.info("render.datalib.fetchData :: starting to merge")
   for path, results in result_queue:

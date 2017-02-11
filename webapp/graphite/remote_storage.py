@@ -12,7 +12,6 @@ from graphite.logger import log
 from graphite.util import unpickle
 from graphite.readers import FetchInProgress
 from graphite.render.hashing import compactHash
-from graphite.util import timebounds
 from graphite.worker_pool.pool import get_pool
 
 http = urllib3.PoolManager(num_pools=10, maxsize=5)
@@ -99,11 +98,11 @@ class RemoteStore(object):
   def available(self):
     return time.time() - self.last_failure > settings.REMOTE_RETRY_DELAY
 
-  def fail(self):
-    self.last_failure = time.time()
-
   def find(self, query, headers=None):
     return list(FindRequest(self, query).send(headers))
+
+  def fail(self):
+    self.last_failure = time.time()
 
 
 class FindRequest(object):
@@ -244,7 +243,6 @@ class RemoteReader(object):
     return _fetch(seriesList)
 
   def fetch_list(self, startTime, endTime, now=None, requestContext=None):
-    (startTime, endTime, now) = timebounds(requestContext)
     t = time.time()
 
     query_params = [
