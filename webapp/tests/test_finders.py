@@ -26,7 +26,7 @@ class FinderTest(TestCase):
         node = nodes[0]
         self.assertEqual(node.path.split('.')[0], 'bar')
 
-        node, (time_info, series) = node.fetch(100, 200)
+        path, (time_info, series) = node.fetch(100, 200)
         self.assertEqual(time_info, (100, 200, 10))
         self.assertEqual(len(series), 10)
 
