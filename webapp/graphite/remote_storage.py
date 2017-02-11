@@ -208,17 +208,17 @@ class RemoteReader(object):
     return '<RemoteReader[%x]: %s>' % (id(self), self.store.host)
 
   @staticmethod
-  def _log(msg):
-    log.info(('thread %s at %fs ' % (current_thread().name, time.time())) + msg)
+  def _log(msg, logger):
+    logger(('thread %s at %fs ' % (current_thread().name, time.time())) + msg)
 
   @classmethod
   def log_debug(cls, msg):
     if settings.DEBUG:
-      cls._log(msg)
+      cls._log(msg, log.info)
 
   @classmethod
   def log_error(cls, msg):
-    cls._log(msg)
+    cls._log(msg, log.exception)
 
   def get_intervals(self):
     return self.intervals
@@ -281,7 +281,6 @@ class RemoteReader(object):
       self.log_debug("RemoteReader:: Released global lock %s?%s" % (url, query_string))
 
     cacheLock = requestContext['inflight_locks'][cacheKey]
-    result_completeness = requestContext.get('result_completeness')
 
     with cacheLock:
       self.log_debug("RemoteReader:: got url lock %s?%s" % (url, query_string))
@@ -305,20 +304,27 @@ class RemoteReader(object):
         with retrieve.lock:
           # if the result is known we return it directly
           if hasattr(retrieve, '_result'):
-            self.log_error('RemoteReader:: retrieve completed (cached) %s' % (', '.join([result['path'] for result in getattr(retrieve, '_result')])))
-            return getattr(retrieve, '_result')
+            results = getattr(retrieve, '_result')
+            self.log_debug(
+              'RemoteReader:: retrieve completed (cached) %s' %
+              (', '.join([result['path'] for result in results])),
+            )
+            return results
 
           # otherwise we get it from the queue and keep it for later
           results = q.get(block=True)
 
-          if results is not None:
-            for i in range(len(results)):
-              results[i]['path'] = results[i]['name']
-          else:
-            self.log_error('RemoteReader:: retrieve has received no results')
+          for i in range(len(results)):
+            results[i]['path'] = results[i]['name']
+
+          if not results:
+            self.log_debug('RemoteReader:: retrieve has received no results')
 
           setattr(retrieve, '_result', results)
-          self.log_error('RemoteReader:: retrieve completed %s' % (', '.join([result['path'] for result in results])))
+          self.log_debug(
+            'RemoteReader:: retrieve completed %s' %
+            (', '.join([result['path'] for result in results])),
+          )
           return results
 
       self.log_debug(
@@ -328,9 +334,6 @@ class RemoteReader(object):
       retrieve.lock = Lock()
       data = FetchInProgress(retrieve)
       requestContext['inflight_requests'][cacheKey] = data
-
-      if result_completeness is not None:
-        result_completeness.store_completed()
 
     self.log_debug("RemoteReader:: Returning %s?%s in %fs" % (url, query_string, time.time() - t))
     return data
@@ -344,19 +347,19 @@ class RemoteReader(object):
         url,
         fields=query_params,
         headers=headers,
-        timeout=settings.REMOTE_FIND_TIMEOUT,
+        timeout=settings.REMOTE_FETCH_TIMEOUT,
       )
 
       if result.status != 200:
         self.store.fail()
         self.log_error("ReadResult:: Error response %d from %s?%s" % (result.status, url, query_string))
-        data = None
+        data = []
       else:
         data = unpickle.loads(result.data)
     except Exception as err:
       self.store.fail()
       self.log_error("ReadResult:: Error requesting %s?%s: %s" % (url, query_string, err))
-      data = None
+      data = []
 
     self.log_debug("RemoteReader:: Completed _fetch %s?%s" % (url, query_string))
     return data

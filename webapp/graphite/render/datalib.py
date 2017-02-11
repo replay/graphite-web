@@ -20,7 +20,7 @@ from threading import current_thread
 from graphite.logger import log
 from graphite.storage import STORE
 from graphite.readers import FetchInProgress
-from graphite.remote_storage import RemoteReader, RemoteResultCompleteness
+from graphite.remote_storage import RemoteReader
 from django.conf import settings
 from graphite.util import timebounds
 from graphite.worker_pool.pool import get_pool
@@ -121,19 +121,6 @@ def prefetchRemoteData(requestContext, pathExpressions):
   if requestContext is None:
     requestContext = {}
 
-  if settings.USE_WORKER_POOL:
-    requestContext['result_completeness'] = RemoteResultCompleteness(
-      len(STORE.remote_stores),
-      settings.REMOTE_FETCH_TIMEOUT,
-    )
-    get_pool().put(
-      job=(lambda: _prefetchRemoteData(requestContext, pathExpressions),),
-    )
-  else:
-    _prefetchRemoteData(requestContext, pathExpressions)
-
-
-def _prefetchRemoteData(requestContext, pathExpressions):
   (startTime, endTime, now) = timebounds(requestContext)
   log.info('thread %s prefetchRemoteData:: Starting fetch_list on all backends' % current_thread().name)
 
@@ -179,11 +166,6 @@ def _fetchData(pathExpr, startTime, endTime, now, requestContext, seriesList):
   t = time.time()
 
   if settings.REMOTE_PREFETCH_DATA:
-    if'result_completeness' in requestContext:
-      complete = requestContext['result_completeness'].await_complete()
-      if not complete:
-        raise Exception('timed out waiting for results')
-
     # inflight_requests is only present if at least one remote store
     # has been queried
     if 'inflight_requests' in requestContext:
