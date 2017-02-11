@@ -23,7 +23,6 @@ from graphite.readers import FetchInProgress
 from graphite.remote_storage import RemoteReader
 from django.conf import settings
 from graphite.util import timebounds
-from graphite.worker_pool.pool import get_pool
 
 from traceback import format_exc
 

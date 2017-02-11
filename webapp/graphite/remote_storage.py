@@ -3,7 +3,7 @@ import httplib
 import urllib3
 from Queue import Queue
 from urllib import urlencode
-from threading import Lock, current_thread, Thread, ThreadError
+from threading import Lock, current_thread
 from django.conf import settings
 from django.core.cache import cache
 from graphite.intervals import Interval, IntervalSet
