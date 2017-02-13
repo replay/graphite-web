@@ -61,7 +61,6 @@ def renderView(request):
     'forwardHeaders': extractForwardHeaders(request),
     'template' : requestOptions['template'],
     'tzinfo' : requestOptions['tzinfo'],
-    'prefetchedRemoteData' : {},
     'data' : []
   }
   data = requestContext['data']
