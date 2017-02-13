@@ -53,11 +53,17 @@ class MultiReader(object):
     return IntervalSet( sorted(interval_sets) )
 
   def fetch(self, startTime, endTime, now=None, requestContext=None):
-    results = [
-      node.fetch(startTime, endTime, now, requestContext)
-      for node in self.nodes
-      if node.is_leaf
-    ]
+    try:
+      results = [
+        node.fetch(startTime, endTime, now, requestContext)
+        for node in self.nodes
+        if node.is_leaf
+      ]
+    except Exception as exc:
+      log.exception(
+        'Failed to initiate subfetch: {exc}'
+        .format(exc=str(exc))
+      )
 
     result = []
     for r in results:
