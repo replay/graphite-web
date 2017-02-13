@@ -21,7 +21,6 @@ def connector_class_selector(https_support=False):
 
 
 class RemoteStore(object):
-  lastFailure = 0.0
 
   def __init__(self, host):
     self.host = host
