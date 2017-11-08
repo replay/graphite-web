@@ -21,7 +21,7 @@ def tagSeries(request):
 
   return HttpResponse(
     json.dumps(
-      STORE.tagdb.tag_series(_requestContext(request), path),
+      STORE.tagdb.tag_series(path, requestContext=_requestContext(request)),
     ) if STORE.tagdb else 'null',
     content_type='application/json'
   )
@@ -40,7 +40,7 @@ def delSeries(request):
 
   return HttpResponse(
     json.dumps(
-      STORE.tagdb.del_series(_requestContext(request), path),
+      STORE.tagdb.del_series(path, requestContext=_requestContext(request)),
     ) if STORE.tagdb else 'null',
     content_type='application/json'
   )
@@ -70,8 +70,8 @@ def findSeries(request):
   return HttpResponse(
     json.dumps(
       STORE.tagdb.find_series(
-        _requestContext(request),
         exprs,
+        requestContext=_requestContext(request),
       ) if STORE.tagdb else [],
       indent=(2 if queryParams.get('pretty') else None),
       sort_keys=bool(queryParams.get('pretty'))),
@@ -85,8 +85,8 @@ def tagList(request):
   return HttpResponse(
     json.dumps(
       STORE.tagdb.list_tags(
-        _requestContext(request),
         tagFilter=request.GET.get('filter'),
+        requestContext=_requestContext(request),
       ) if STORE.tagdb else [],
       indent=(2 if request.GET.get('pretty') else None),
       sort_keys=bool(request.GET.get('pretty'))),
@@ -100,9 +100,9 @@ def tagDetails(request, tag):
   return HttpResponse(
     json.dumps(
       STORE.tagdb.get_tag(
-        _requestContext(request),
         tag,
         valueFilter=request.GET.get('filter'),
+        requestContext=_requestContext(request),
       ) if STORE.tagdb else None,
       indent=(2 if request.GET.get('pretty') else None),
       sort_keys=bool(request.GET.get('pretty'))),
@@ -127,7 +127,7 @@ def autoCompleteTags(request):
   tagPrefix = queryParams.get('tagPrefix')
 
   result = STORE.tagdb.auto_complete_tags(
-    _requestContext(request), exprs, tagPrefix)
+    exprs, tagPrefix, requestContext=_requestContext(request))
 
   return HttpResponse(
     json.dumps(result,
@@ -162,7 +162,7 @@ def autoCompleteValues(request):
   valuePrefix = queryParams.get('valuePrefix')
 
   result = STORE.tagdb.auto_complete_values(
-    _requestContext(request), exprs, tag, valuePrefix)
+    exprs, tag, valuePrefix, requestContext=_requestContext(request))
 
   return HttpResponse(
     json.dumps(result,

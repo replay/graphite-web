@@ -348,7 +348,7 @@ def prefetchRemoteData(requestContext, targets):
   if len([finder for finder in STORE.finders if not getattr(finder, 'local', True) and not getattr(finder, 'disabled', False)]) < 1:
     return
 
-  pathExpressions = extractPathExpressions(requestContext, targets)
+  pathExpressions = extractPathExpressions(targets, requestContext)
   log.rendering("Prefetching remote data for [%s]" % (', '.join(pathExpressions)))
 
   (startTime, endTime, now) = timebounds(requestContext)
